@@ -1,0 +1,108 @@
+================================================================================
+PROYECTO: ENTORNO DE SIMULACIÓN DE RED GPON Y ALGORITMOS DBA (OMNeT++)
+================================================================================
+
+Este documento describe la arquitectura, la función individual de los módulos en 
+C++ y la configuración del simulador OMNeT++ utilizado para evaluar y validar el 
+desempeño del algoritmo de Asignación Dinámica de Ancho de Banda (DBA) basado en IA.
+
+--------------------------------------------------------------------------------
+1. RESUMEN DE COMPONENTES (¿Qué hace cada archivo?)
+--------------------------------------------------------------------------------
+
+* 1. GponMsg_m.h / GponMsg_m.cc
+  -----------------------------
+  Definen las estructuras de los mensajes de red nativos de la simulación. 
+  Contienen la especificación y empaquetado de objetos críticos como reportes de
+  demanda de las ONUs (DemandReport), concesiones de ancho de banda de la OLT 
+  (Grant) y los paquetes de datos de usuario (DataPacket).
+
+* 2. ONU.cc
+  ---------
+  Modela el comportamiento de las Unidades de Red Óptica (ONUs) de los usuarios.
+  Carga el dataset sintético de alta resolución (2ms) para replicar el tráfico,
+  calcula su cuota proporcional de consumo, encola los bytes generados en el buffer,
+  reporta sus necesidades a la OLT y procesa las concesiones de transmisión recibidas.
+
+* 3. OLT.cc
+  ---------
+  Modela la Terminal de Línea Óptica Central. Actúa como el cerebro del sistema:
+  recolecta los reportes de demanda de todas las ONUs y ejecuta el algoritmo DBA. 
+  Puede operar bajo esquemas reactivos tradicionales o cargar de forma asíncrona el 
+  archivo de predicciones de la IA para ejecutar la asignación predictiva/conservadora.
+
+* 4. omnetpp.ini
+  --------------
+  Archivo maestro de configuración del entorno de simulación. Orquesta los escenarios,
+  define los límites de tiempo de simulación, el número de ONUs concurrentes (64),
+  los archivos de entrada y parametriza los casos de prueba divididos entre esquemas 
+  reactivos ("reactive_delayed") y predictivos con LSTM ("predictive_lstm_conservative").
+
+
+--------------------------------------------------------------------------------
+2. FLUJO DE TRABAJO CONJUNTO EN LA SIMULACIÓN
+--------------------------------------------------------------------------------
+
+La simulación se ejecuta de manera cíclica cada 2 milisegundos (tickInterval)
+siguiendo estos pasos interconectados:
+
+FASE 1: GENERACIÓN DE DEMANDA Y REPORTE (ONU ──► Mensajes)
+  A cada intervalo, el módulo 'ONU.cc' lee la serie temporal de demanda. Inyecta
+  bytes simulados a sus colas según los patrones históricos. Inmediatamente, 
+  construye un objeto 'DemandReport' (definido en GponMsg_m.h) con el estado de su 
+  buffer y lo envía hacia la OLT a través del canal óptico.
+
+FASE 2: PROCESAMIENTO Y ASIGNACIÓN (Mensajes ──► OLT)
+  El módulo 'OLT.cc' recibe los reportes. Si la configuración de 'omnetpp.ini' 
+  indica un esquema reactivo, calcula el ancho de banda con retraso. Si indica un 
+  esquema predictivo, lee el índice actual del archivo CSV generado por la red 
+  neuronal, le añade el margen conservador y decide la cantidad óptima de bytes 
+  que asignará a cada dispositivo.
+
+FASE 3: CONCESIÓN Y TRANSMISIÓN (OLT ──► ONU)
+  La OLT emite mensajes tipo 'Grant' de regreso a las ONUs. Al recibirlos, 'ONU.cc'
+  desencola los bytes autorizados, reduciendo su buffer y simulando el éxito de la
+  transmisión. Finalmente, ambos módulos registran métricas estadísticas clave 
+  (latencia, desperdicio de ancho de banda y bytes no atendidos) para su análisis final.
+
+
+--------------------------------------------------------------------------------
+3. ARQUITECTURA INTEGRAL DEL PROYECTO (Unión de la IA y la Simulación)
+--------------------------------------------------------------------------------
+
+A continuación se muestra cómo se conecta la fase previa de Ciencia de Datos en
+Python con este entorno físico y matemático en OMNeT++:
+
+  [ TRÁFICO REAL OLT ] 
+           │ (Captura SNMP)
+           ▼
+  [ INGESTA Y SIMULACIÓN ESTADÍSTICA ] ──► Genera: 'dataset_demanda_2ms.csv'
+           │                                          │
+           ▼                                          │ (Alimenta los buffers)
+  [ ENTRENAMIENTO LSTM (Python) ]                     │
+           │                                          ▼
+           └──► Genera: 'predicciones_lstm_2ms.csv'   │
+                             │                        │
+  ===========================│========================│=========================
+                             ▼                        ▼  [ENTORNO OMNeT++]
+                    ┌───────────────────────────────────┐
+                    │           omnetpp.ini             │ (Configura el escenario)
+                    └─────────────────┬─────────────────┘
+                                      │
+                                      ▼
+                    ┌───────────────────────────────────┐
+                    │             OLT.cc                │◄── (GponMsg_m.h)
+                    └─────────────────▲─────────────────┘
+                                      │  ▲
+              (Reportes de Demanda)   │  │ (Concesiones de Tráfico 'Grants')
+                                      │  │
+                    ┌─────────────────┴──┴──────────────┐
+                    │             ONU.cc                │ (Simula 64 ONUs)
+                    └───────────────────────────────────┘
+                                      │
+                                      ▼
+                       [ RESULTADOS Y MÉTRICAS (.sca/.vec) ]
+                       - Latencia Promedio (ms)
+                       - Tráfico Insatisfecho (Unmet bytes)
+                       - Ancho de Banda Desperdiciado (Waste bytes)
+================================================================================
